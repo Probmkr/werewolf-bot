@@ -1,5 +1,7 @@
 /*
 
 !/.gitignore
+__pycache__/
 
 !/src/
+!/sqls/
