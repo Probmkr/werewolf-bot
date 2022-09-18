@@ -10,16 +10,20 @@ GM_CHANNEL = int(os.getenv("GM_CHANNEL"))
 DSN = os.getenv("DSN")
 RESET_DB = bool(int(os.getenv("RESET_DB", 0)))
 GAME_STATUS = [
-            ["running", "進行中"],
-            ["paused", "一時停止中"],
-            ["ended", "終了済み"]]
+    ["running", "進行中"],
+    ["paused", "一時停止中"],
+    ["ended", "終了済み"]]
 GAME_ROLES = [
-            ["villager", "村人"],
-            ["werewolf", "人狼"],
-            ["seer", "占い師"],
-            ["maniac", "狂人"],
-            ["medium", "霊媒師"],
-            ["guard", "ガードマン"]]
+    ["villager", "村人"],
+    ["werewolf", "人狼"],
+    ["seer", "占い師"],
+    ["maniac", "狂人"],
+    ["medium", "霊媒師"],
+    ["guard", "ガードマン"]]
+GAME_CHANNELS = [
+    ["gm_channel", "人狼GMチャット"],
+    ["text_meeting_channel", "人狼昼チャット"],
+    ["voice_meeting_channel", "人狼昼ボイスチャット"]]
 ERROR_CODES = {
     0: "そのサーバーではすでにゲームが開始されています",
     1: "そのサーバーで進行中のゲームはありません",

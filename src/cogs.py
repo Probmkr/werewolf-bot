@@ -1,14 +1,20 @@
-from typing import TypeAlias
+from typing import TypeAlias, TypedDict
 import disnake
-from disnake.ext import commands
+from disnake.ext import commands, tasks
 from db import DBC
+from game_controller import GameBoard, GameController, GameDataType
 from var import BOT_ID, ERROR_CODES, GAME_STATUS, GM_CHANNEL, MAIN_GUILD
 from logger import LT, Logger
 from snowflake import SnowflakeGenerator
+from multiprocessing import Process
+import threading
+import os
+import asyncio
 
 gen = SnowflakeGenerator(0)
 logger = Logger()
 Inter: TypeAlias = disnake.ApplicationCommandInteraction
+game_ctl = GameController()
 
 
 class Others(commands.Cog):
@@ -27,15 +33,23 @@ class Others(commands.Cog):
 
     @commands.Cog.listener()
     async def on_interaction(self, interaction: Inter):
-        logger.log(LT.TRACE, f"inter_type: `{interaction.type}` inter_id `{interaction.id}`")
+        logger.log(
+            LT.TRACE, f"inter_type: `{interaction.type}` inter_id `{interaction.id}`")
 
+    @commands.slash_command()
+    async def ping(self, interaction: Inter):
+        latency = self.bot.latency
+        embed = disnake.Embed(title="Pong!", color=0x00ff00)
+        embed.add_field(name="latency", value=f"`{int(latency*1000)}ms`")
+        await interaction.response.send_message(embed=embed)
 
 class Werewolf(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self.games_to_start: list[asyncio.Task] = []
         self.dbctl = DBC()
 
-    def new_embed(self, *, title: str = "", description: str = "") -> disnake.Embed:
+    def new_embed(self, title: str = "", description: str = "") -> disnake.Embed:
         embed = disnake.Embed(
             title=title, description=description, color=disnake.Color.dark_red())
         # embed.set_author(
@@ -51,6 +65,13 @@ class Werewolf(commands.Cog):
             return False
         return True
 
+    def add_game_task(self, task: asyncio.Task, guild_id: int):
+        self.games_to_start.append(task)
+
+    @tasks.loop(seconds=1)
+    async def start_game_tasks(self):
+        await self.games_to_start.pop(0)()
+
     @commands.slash_command()
     async def embed_test(self, interaction: Inter):
         embed = self.new_embed(
@@ -61,12 +82,39 @@ class Werewolf(commands.Cog):
     async def wolf(self, interaction: Inter):
         pass
 
+    @wolf.sub_command(description="人狼ゲームで使うチャンネルを設定します")
+    async def set_channel(
+            self,
+            interaction: Inter,
+            gm_channel: disnake.abc.GuildChannel = commands.Param(
+                None, description="人狼GMがメッセージを送信するチャンネル"),
+            text_meeting_channel: disnake.abc.GuildChannel = commands.Param(
+                None, description="昼の会議チャンネル"),
+            voice_meeting_channel: disnake.abc.GuildChannel = commands.Param(None, description="昼の会議ボイスチャンネル")):
+
+        bad_channel = False
+        if not (gm_channel and gm_channel.type == disnake.ChannelType.text):
+            bad_channel = True
+        if not (text_meeting_channel and text_meeting_channel.type == disnake.ChannelType.text):
+            bad_channel = True
+        if not (voice_meeting_channel and voice_meeting_channel.type == disnake.ChannelType.voice):
+            bad_channel = True
+        if bad_channel:
+            await interaction.response.send_message(embed=self.new_embed(
+                title="設定に失敗しました",
+                description="正しいチャンネルタイプを指定してください"))
+            return
+        self.dbctl.set_channels(interaction.guild_id, gm_channel.id,
+                                text_meeting_channel.id, voice_meeting_channel.id)
+        await interaction.response.send_message(embed=self.new_embed(title="設定が完了しました"))
+
     @wolf.sub_command(description="人狼ゲームを開始します")
     async def start(self, interaction: Inter):
         if not await self.check_role(interaction):
             return
         res = self.dbctl.start_game(
             interaction.author.id, interaction.guild_id)
+        channel = self.dbctl.get_channels(interaction.guild_id)
         if not res["res"]:
             game_status = res["game_status"]
             error_code = res["code"]
@@ -76,10 +124,23 @@ class Werewolf(commands.Cog):
                     title=ERROR_CODES[error_code],
                     description=f"このサーバーでのゲームは{GAME_STATUS[game_status][1]}です。"))
             return
+        elif len(channel) < 3:
+            await interaction.send(embed=self.new_embed("ゲームを開始する前に先にチャンネル設定を行ってください"))
+
         await interaction.response.send_message(
             embed=self.new_embed(
                 title="ゲームスタート",
-                description=f"ゲームidは`{res['game_id']}`です。"))
+                description=f"ゲーム No.`{res['game_id']}`"))
+        res = self.dbctl.get_game_from_server(interaction.guild_id)
+        game_data: GameDataType = dict(res[0])
+
+        game = GameBoard(game_data, self.bot)
+        await game.async_init()
+        game_task = asyncio.create_task(game.start())
+        self.add_game_task(game_task, interaction.guild_id)
+        game_ctl.add_game(game)
+
+
 
     @wolf.sub_command(description="人狼ゲームを強制終了します")
     async def stop(self, interaction: Inter):
@@ -93,14 +154,12 @@ class Werewolf(commands.Cog):
         view.add_item(button)
 
         def check(inter: disnake.MessageInteraction):
-            logger.log(LT.DEBUG, inter.component.type.value)
+            if not type(inter) == disnake.MessageInteraction:
+                return False
             component_type = inter.component.type.value == 2
-            custom_type = inter.component.custom_id == str(snowflake_id)
+            custom_id = inter.component.custom_id == str(snowflake_id)
             author = inter.author.id == interaction.author.id
-            logger.log(LT.DEBUG, f"component_type was {component_type}")
-            logger.log(LT.DEBUG, f"custom_type was {custom_type}")
-            logger.log(LT.DEBUG, f"author was {author}")
-            return type(inter) == disnake.MessageInteraction and component_type and custom_type and author
+            return  component_type and custom_id and author
 
         if res:
             await interaction.response.send_message(
