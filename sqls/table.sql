@@ -17,13 +17,15 @@ create table if not exists roles (
   role_id int not null primary key,
   role_code text not null,
   role_name text not null,
-  role_description text
+  role_description text,
+  mankind boolean not null
 );
 
 create table if not exists game_players (
   game_id bigserial not null,
-  player_id bigserial not null primary key,
-  role_id serial not null
+  player_id bigserial not null,
+  role_id serial not null,
+  alive boolean not null default(true)
 );
 
 create table if not exists channels (

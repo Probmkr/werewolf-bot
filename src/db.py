@@ -1,4 +1,4 @@
-from typing import List, TypeAlias
+from typing import Dict, List, TypeAlias
 # import mariadb as mydb
 import psycopg2
 import psycopg2.extras
@@ -14,8 +14,9 @@ logger = Logger()
 class DBController():
     dsn: str
     reset_db: bool
-    game_status_list: List[List[str]]
-    role_list: List[List[str]]
+    game_status_list: Dict[int, List[str]]
+    role_list: Dict[int, List[str]]
+    game_channels: Dict[int, List[str]]
 
     def get_dict_conn(self):
         return psycopg2.connect(self.dsn, cursor_factory=psycopg2.extras.DictCursor)
@@ -39,21 +40,21 @@ class DBController():
             conn.commit()
         try:
             with self.get_dict_conn() as conn:
-                for id, status in enumerate(self.game_status_list):
+                for id, status in self.game_status_list.items():
                     with conn.cursor() as cur:
                         sql = "insert into game_status (status_id, status_code, status_name) values (%s, %s, %s)"
                         params = (id, status[0], status[1])
                         cur.execute(sql, params)
                 conn.commit()
             with self.get_dict_conn() as conn:
-                for id, role in enumerate(self.role_list):
+                for id, role in self.role_list.items():
                     with conn.cursor() as cur:
-                        sql = "insert into roles (role_id, role_code, role_name) values (%s, %s, %s)"
-                        params = (id, role[0], role[1])
+                        sql = "insert into roles (role_id, role_code, role_name, role_description, mankind) values (%s, %s, %s, %s, %s)"
+                        params = (id, role[0], role[1], role[2], role[3])
                         cur.execute(sql, params)
                 conn.commit()
             with self.get_dict_conn() as conn:
-                for id, channel in enumerate(self.game_channels):
+                for id, channel in self.game_channels.items():
                     with conn.cursor() as cur:
                         sql = "insert into channels (setting_id, setting_code, setting_name) values (%s, %s, %s)"
                         params = (id, channel[0], channel[1])
@@ -92,6 +93,7 @@ class DBController():
                     cur.execute(
                         "update games set game_status_id = 2 where game_id = %s",
                         (res[0],))
+                    self.delete_all_players(res[0])
                     conn.commit()
                     return {"res": True}
                 else:
@@ -199,5 +201,36 @@ class DBController():
                         (host_guild_id,))
                 return cur.fetchall()
 
+    def register_player(self, game_id, player_id, role_id):
+        with self.get_dict_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    insert into game_players
+                    (game_id, player_id, role_id)
+                    values (%s, %s, %s)
+                    """,
+                    (game_id, player_id, role_id))
+            conn.commit()
+
+    def delete_player(self, game_id, player_id):
+        with self.get_dict_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    delete from game_players
+                    where game_id = %s
+                    and player_id = %s
+                    """,
+                    (game_id, player_id))
+            conn.commit()
+
+    def delete_all_players(self, game_id):
+        with self.get_dict_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "delete from game_players where game_id = %s",
+                    (game_id,))
+            conn.commit()
 
 DBC: TypeAlias = DBController

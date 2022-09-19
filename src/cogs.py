@@ -87,10 +87,11 @@ class Werewolf(commands.Cog):
             self,
             interaction: Inter,
             gm_channel: disnake.abc.GuildChannel = commands.Param(
-                None, description="人狼GMがメッセージを送信するチャンネル"),
+                description="人狼GMがメッセージを送信するチャンネル"),
             text_meeting_channel: disnake.abc.GuildChannel = commands.Param(
-                None, description="昼の会議チャンネル"),
-            voice_meeting_channel: disnake.abc.GuildChannel = commands.Param(None, description="昼の会議ボイスチャンネル")):
+                description="昼の会議チャンネル"),
+            voice_meeting_channel: disnake.abc.GuildChannel = commands.Param(
+                description="昼の会議ボイスチャンネル")):
 
         bad_channel = False
         if not (gm_channel and gm_channel.type == disnake.ChannelType.text):
@@ -126,10 +127,11 @@ class Werewolf(commands.Cog):
             return
         elif len(channel) < 3:
             await interaction.send(embed=self.new_embed("ゲームを開始する前に先にチャンネル設定を行ってください"))
+            return
 
         await interaction.response.send_message(
             embed=self.new_embed(
-                title="ゲームスタート",
+                title="ゲームを開始します",
                 description=f"ゲーム No.`{res['game_id']}`"))
         res = self.dbctl.get_game_from_server(interaction.guild_id)
         game_data: GameDataType = dict(res[0])
