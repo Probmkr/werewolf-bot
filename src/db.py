@@ -1,4 +1,4 @@
-from typing import Dict, List, TypeAlias
+from typing import TypeAlias
 # import mariadb as mydb
 import psycopg2
 import psycopg2.extras
@@ -14,9 +14,9 @@ logger = Logger()
 class DBController():
     dsn: str
     reset_db: bool
-    game_status_list: Dict[int, List[str]]
-    role_list: Dict[int, List[str]]
-    game_channels: Dict[int, List[str]]
+    game_status_list: dict[int, list[str]]
+    role_list: dict[int, list[str]]
+    game_channels: dict[int, list[str]]
 
     def get_dict_conn(self):
         return psycopg2.connect(self.dsn, cursor_factory=psycopg2.extras.DictCursor)
@@ -163,7 +163,7 @@ class DBController():
                         cur.execute(sql, params)
             conn.commit()
 
-    def get_channels(self, guild_id):
+    def get_channels(self, guild_id) -> list[psycopg2.extras.DictRow]:
         with self.get_dict_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -185,7 +185,7 @@ class DBController():
                 logger.log(LT.WARNING, e)
                 return False
 
-    def get_game_from_server(self, host_guild_id: int, game_status_ids: List[int] | None = [0, 1]) -> List[List] | None:
+    def get_game_from_server(self, host_guild_id: int, game_status_ids: list[int] | None = [0, 1]) -> list[psycopg2.extras.DictRow] | None:
         with self.get_dict_conn() as conn:
             with conn.cursor() as cur:
                 if game_status_ids:
@@ -201,19 +201,19 @@ class DBController():
                         (host_guild_id,))
                 return cur.fetchall()
 
-    def register_player(self, game_id, player_id, role_id):
+    def register_player(self, game_id, player_id, player_name, role_id) -> None:
         with self.get_dict_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
                     insert into game_players
-                    (game_id, player_id, role_id)
-                    values (%s, %s, %s)
+                    (game_id, player_id, player_name, role_id)
+                    values (%s, %s, %s, %s)
                     """,
-                    (game_id, player_id, role_id))
+                    (game_id, player_id, player_name, role_id))
             conn.commit()
 
-    def delete_player(self, game_id, player_id):
+    def delete_player(self, game_id, player_id) -> None:
         with self.get_dict_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -225,12 +225,71 @@ class DBController():
                     (game_id, player_id))
             conn.commit()
 
-    def delete_all_players(self, game_id):
+    def delete_all_players(self, game_id) -> None:
         with self.get_dict_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     "delete from game_players where game_id = %s",
                     (game_id,))
             conn.commit()
+
+    def set_time(self, game_id, *, noon: int = None, night: int = None):
+        no_noon = noon == None
+        no_night = night == None
+        if (no_noon and no_night) or not (no_noon or no_night):
+            return False
+        elif not no_noon:
+            print(noon)
+            with self.get_dict_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        update games
+                        set noon_time = %s
+                        where game_id = %s
+                        """,
+                        (noon, game_id))
+                conn.commit()
+        elif not no_night:
+            with self.get_dict_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        update games
+                        set night_time = %s
+                        where game_id = %s
+                        """,
+                        (night, game_id))
+                conn.commit()
+
+    def get_all_players(self, game_id: int, *, alives: bool = True) -> list[psycopg2.extras.DictRow]:
+        with self.get_dict_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "select * from game_players where game_id = %s and alive = %s",
+                    (game_id, alives))
+                return cur.fetchall()
+
+    def get_role_players(self, game_id: int, role_id: int, *, alives: bool = True) -> list[psycopg2.extras.DictRow] | None:
+        with self.get_dict_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "select * from game_players where game_id = %s and role_id = %s and alive = %s",
+                    (game_id, role_id, alives))
+                return cur.fetchall()
+
+    def get_human_players(self, game_id: int, human: bool = True):
+        with self.get_dict_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "select * from game_players inner join roles using (role_id) where game_id = %s and mankind = %s",
+                    (game_id, human))
+
+    def for_test(self):
+        with self.get_dict_conn() as conn:
+            with conn.cursor()as cur:
+                cur.execute("select * from channel_settings")
+                return cur.fetchall()
+
 
 DBC: TypeAlias = DBController

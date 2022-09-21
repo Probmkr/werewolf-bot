@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import List, TypeAlias
+from typing import TypeAlias
 from dotenv import load_dotenv
 from urllib import parse
 import os
@@ -68,7 +68,7 @@ def color_text(text: str, color: CC) -> str:
     return f"{color.value}{text}{CC.RESET.value}"
 
 
-def format_text(text: str, formats: List[CC]):
+def format_text(text: str, formats: list[CC]):
     return f"{''.join(map(lambda format: format.value, formats))}{text}{CC.RESET.value}" if formats else text
 
 
@@ -80,7 +80,7 @@ class Logger:
     def __init__(self, log_type: LT = DLT):
         self.log_type = log_type
 
-    def log(self, log_type: LT, message: str, *, custom_formats: List[CC] = None) -> None:
+    def log(self, log_type: LT, message: str, *, custom_formats: list[CC] = None) -> None:
         if log_type.value <= self.log_type.value:
             print_text = format_text(
                 color_text(

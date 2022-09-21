@@ -1,3 +1,4 @@
+import time
 from typing import TypeAlias, TypedDict
 import disnake
 from disnake.ext import commands, tasks
@@ -6,15 +7,25 @@ from game_controller import GameBoard, GameController, GameDataType
 from var import BOT_ID, ERROR_CODES, GAME_STATUS, GM_CHANNEL, MAIN_GUILD
 from logger import LT, Logger
 from snowflake import SnowflakeGenerator
-from multiprocessing import Process
-import threading
-import os
 import asyncio
+from decimal import Decimal, ROUND_HALF_UP, ROUND_HALF_EVEN
 
 gen = SnowflakeGenerator(0)
 logger = Logger()
 Inter: TypeAlias = disnake.ApplicationCommandInteraction
 game_ctl = GameController()
+
+
+def new_embed(title: str = "", description: str = "") -> disnake.Embed:
+    embed = disnake.Embed(
+        title=title, description=description, color=disnake.Color.dark_red())
+    # embed.set_author(
+    #     name="人狼GM", icon_url="https://cdn.discordapp.com/avatars/1018169450886856875/291ca2bfb08a25033a72d80734c0cd6a.webp")
+    return embed
+
+
+def dround(num: int):
+    return Decimal(str(num)).quantize(Decimal('0'), rounding=ROUND_HALF_UP)
 
 
 class Others(commands.Cog):
@@ -42,6 +53,7 @@ class Others(commands.Cog):
         embed = disnake.Embed(title="Pong!", color=0x00ff00)
         embed.add_field(name="latency", value=f"`{int(latency*1000)}ms`")
         await interaction.response.send_message(embed=embed)
+
 
 class Werewolf(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -111,6 +123,7 @@ class Werewolf(commands.Cog):
 
     @wolf.sub_command(description="人狼ゲームを開始します")
     async def start(self, interaction: Inter):
+        await interaction.response.defer()
         if not await self.check_role(interaction):
             return
         res = self.dbctl.start_game(
@@ -120,7 +133,7 @@ class Werewolf(commands.Cog):
             game_status = res["game_status"]
             error_code = res["code"]
             logger.log(LT.DEBUG, game_status)
-            await interaction.response.send_message(
+            await interaction.edit_original_message(
                 embed=self.new_embed(
                     title=ERROR_CODES[error_code],
                     description=f"このサーバーでのゲームは{GAME_STATUS[game_status][1]}です。"))
@@ -129,20 +142,17 @@ class Werewolf(commands.Cog):
             await interaction.send(embed=self.new_embed("ゲームを開始する前に先にチャンネル設定を行ってください"))
             return
 
-        await interaction.response.send_message(
+        await interaction.edit_original_message(
             embed=self.new_embed(
                 title="ゲームを開始します",
                 description=f"ゲーム No.`{res['game_id']}`"))
-        res = self.dbctl.get_game_from_server(interaction.guild_id)
-        game_data: GameDataType = dict(res[0])
+        game_data: GameDataType = self.dbctl.get_game_from_server(interaction.guild_id)[0]
 
         game = GameBoard(game_data, self.bot)
         await game.async_init()
         game_task = asyncio.create_task(game.start())
         self.add_game_task(game_task, interaction.guild_id)
         game_ctl.add_game(game)
-
-
 
     @wolf.sub_command(description="人狼ゲームを強制終了します")
     async def stop(self, interaction: Inter):
@@ -161,7 +171,7 @@ class Werewolf(commands.Cog):
             component_type = inter.component.type.value == 2
             custom_id = inter.component.custom_id == str(snowflake_id)
             author = inter.author.id == interaction.author.id
-            return  component_type and custom_id and author
+            return component_type and custom_id and author
 
         if res:
             await interaction.response.send_message(
@@ -178,6 +188,12 @@ class Werewolf(commands.Cog):
 
     async def really_stop(self, interaction: Inter):
         self.dbctl.end_game(interaction.guild_id)
+        try:
+            game_ctl.games[interaction.guild_id].interrupt = True
+        except TypeError as e:
+            logger.log(LT.WARNING, e)
+        except KeyError as e:
+            logger.log(LT.INFO, e)
         embed = self.new_embed(
             title="ゲームを終了しました")
         await interaction.edit_original_message(view=None)
@@ -192,12 +208,63 @@ class Werewolf(commands.Cog):
                     title=ERROR_CODES[2]))
         else:
             status = dict(status[0])
-            logger.log(LT.DEBUG, status)
             embed = self.new_embed(title="現在進行中のゲーム")
             for i in status:
-                logger.log(LT.DEBUG, i)
                 embed.add_field(name=i, value=f"`{status[i]}`")
             await interaction.response.send_message(embed=embed)
+
+    class ExtendButton(disnake.ui.Button):
+        def __init__(self, player_num: int, original_inter: Inter, original_msg: str, game: GameBoard, extend_seconds: int, custom_id: str):
+            super().__init__(label="投票", custom_id=custom_id)
+            self.vote = {original_inter.author.id}
+            self.least_num = int(player_num/2)+1
+            self.original_inter = original_inter
+            self.original_msg = original_msg
+            self.seconds = extend_seconds
+            self.game = game
+
+        async def callback(self, interaction: disnake.MessageInteraction):
+            self.vote.add(interaction.author.id)
+            vote_num = len(self.vote)
+            text = f"ただいま{vote_num}/{self.least_num}人が投票しています"
+            await self.original_inter.edit_original_message(embed=new_embed(self.original_msg, text))
+            await interaction.response.send_message("投票しました", ephemeral=True)
+            if vote_num >= self.least_num:
+                await self.original_inter.send(embed=new_embed("延長が決定しました"))
+                self.game.extends.append(self.seconds)
+
+    @wolf.sub_command(description="昼の会議時間を伸ばします")
+    async def extend(self, interaction: Inter, seconds: int = commands.Param(description="延長する秒数を指定してください（30秒以上）")):
+        not_noon = False
+        game = None
+        try:
+            game = game_ctl.games[interaction.guild_id]
+            if game.status != "noon":
+                not_noon = True
+        except KeyError:
+            not_noon = True
+
+        # if not_noon:
+        #     interaction.response.send_message("今は昼の会議中ではありません", ephemeral=True)
+        #     return
+
+        if seconds < 30:
+            await interaction.response.send_message(embed=self.new_embed("30秒以上にしてください"), ephemeral=True)
+            return
+        button_id = str(next(gen))
+        button = None
+        try:
+            player_num = len(self.dbctl.get_all_players(game.game_id))
+            view = disnake.ui.View()
+            text = f"{int(player_num/2)+1}人の投票が必要です"
+            button = self.ExtendButton(
+                player_num, interaction, text, game, seconds, button_id)
+            view.add_item(button)
+            await interaction.response.send_message(embed=self.new_embed(text), view=view, ephemeral=False)
+        except Exception as e:
+            logger.log(LT.WARNING, e)
+            await interaction.response.send_message("error", ephemeral=True)
+            return
 
 
 def setup(bot: commands.Bot):

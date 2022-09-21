@@ -4,6 +4,8 @@ create table if not exists games (
   game_host_user_id bigserial not null,
   game_host_guild_id bigserial not null,
   game_started_at timestamp default(current_timestamp),
+  noon_time int default(0),
+  night_time int default(0),
   game_ended_at timestamp
 );
 
@@ -24,6 +26,7 @@ create table if not exists roles (
 create table if not exists game_players (
   game_id bigserial not null,
   player_id bigserial not null,
+  player_name text not null,
   role_id serial not null,
   alive boolean not null default(true)
 );
