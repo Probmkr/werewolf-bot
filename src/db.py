@@ -4,7 +4,7 @@ import psycopg2
 import psycopg2.extras
 import psycopg2.errors
 from logger import LT, Logger
-from var import DSN, GAME_CHANNELS, GAME_ROLES, GAME_STATUS, RESET_DB
+from var import DSN, GAME_CHANNELS, GAME_ROLES, GAME_STATUS, GUILD_ROLES, RESET_DB
 from snowflake import SnowflakeGenerator
 
 gen = SnowflakeGenerator(0)
@@ -17,16 +17,18 @@ class DBController():
     game_status_list: dict[int, list[str]]
     role_list: dict[int, list[str]]
     game_channels: dict[int, list[str]]
+    guild_roles: dict[int, list[str]]
 
     def get_dict_conn(self):
         return psycopg2.connect(self.dsn, cursor_factory=psycopg2.extras.DictCursor)
 
-    def __init__(self, *, dsn=DSN, reset_db=RESET_DB, game_status=GAME_STATUS, game_roles=GAME_ROLES, game_channels=GAME_CHANNELS):
+    def __init__(self, *, dsn=DSN, reset_db=RESET_DB, game_status=GAME_STATUS, game_roles=GAME_ROLES, game_channels=GAME_CHANNELS, guild_roles=GUILD_ROLES):
         self.dsn = dsn
         self.reset_db = reset_db
         self.game_status_list = game_status
         self.role_list = game_roles
         self.game_channels = game_channels
+        self.guild_roles = guild_roles
         self.init_db()
 
     def init_db(self) -> bool:
@@ -56,8 +58,15 @@ class DBController():
             with self.get_dict_conn() as conn:
                 for id, channel in self.game_channels.items():
                     with conn.cursor() as cur:
-                        sql = "insert into channels (setting_id, setting_code, setting_name) values (%s, %s, %s)"
+                        sql = "insert into channels (setting_type, setting_code, setting_name) values (%s, %s, %s)"
                         params = (id, channel[0], channel[1])
+                        cur.execute(sql, params)
+                conn.commit()
+            with self.get_dict_conn() as conn:
+                for id, role in self.guild_roles.items():
+                    with conn.cursor() as cur:
+                        sql = "insert into guild_roles (setting_type, setting_code, setting_name, setting_description) values (%s, %s, %s, %s)"
+                        params = (id, channel[0], channel[1], channel[2])
                         cur.execute(sql, params)
                 conn.commit()
         except Exception as e:
@@ -103,60 +112,63 @@ class DBController():
         with self.get_dict_conn() as conn:
             if gm_channel:
                 with conn.cursor() as cur:
-                    cur.execute("select * from channel_settings where setting_id = 0 and setting_guild = %s", (guild_id,))
+                    cur.execute(
+                        "select * from channel_settings where setting_type = 0 and setting_guild = %s", (guild_id,))
                     res = cur.fetchone()
                     if res:
                         sql = \
                             """update channel_settings
                         set setting_value = %s
-                        where setting_id = 0
+                        where setting_type = 0
                         and setting_guild = %s"""
                         params = (gm_channel, guild_id)
                         cur.execute(sql, params)
                     else:
                         sql = \
                             """insert into channel_settings
-                            (setting_id, setting_guild, setting_value)
+                            (setting_type, setting_guild, setting_value)
                             values
                             (0, %s, %s)"""
                         params = (guild_id, gm_channel)
                         cur.execute(sql, params)
             if text_meeting_channel:
                 with conn.cursor() as cur:
-                    cur.execute("select * from channel_settings where setting_id = 1 and setting_guild = %s", (guild_id,))
+                    cur.execute(
+                        "select * from channel_settings where setting_type = 1 and setting_guild = %s", (guild_id,))
                     res = cur.fetchone()
                     if res:
                         sql = \
                             """update channel_settings
                         set setting_value = %s
-                        where setting_id = 1
+                        where setting_type = 1
                         and setting_guild = %s"""
                         params = (text_meeting_channel, guild_id)
                         cur.execute(sql, params)
                     else:
                         sql = \
                             """insert into channel_settings
-                            (setting_id, setting_guild, setting_value)
+                            (setting_type, setting_guild, setting_value)
                             values
                             (1, %s, %s)"""
                         params = (guild_id, text_meeting_channel)
                         cur.execute(sql, params)
             if voice_meeting_channel:
                 with conn.cursor() as cur:
-                    cur.execute("select * from channel_settings where setting_id = 2 and setting_guild = %s", (guild_id,))
+                    cur.execute(
+                        "select * from channel_settings where setting_type = 2 and setting_guild = %s", (guild_id,))
                     res = cur.fetchone()
                     if res:
                         sql = \
                             """update channel_settings
                         set setting_value = %s
-                        where setting_id = 2
+                        where setting_type = 2
                         and setting_guild = %s"""
                         params = (voice_meeting_channel, guild_id)
                         cur.execute(sql, params)
                     else:
                         sql = \
                             """insert into channel_settings
-                            (setting_id, setting_guild, setting_value)
+                            (setting_type, setting_guild, setting_value)
                             values
                             (2, %s, %s)"""
                         params = (guild_id, voice_meeting_channel)
@@ -262,28 +274,48 @@ class DBController():
                         (night, game_id))
                 conn.commit()
 
+    def set_player_alive(self, game_id: int, player_id: int, player_alive: bool = False):
+        with self.get_dict_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "update game_players set alive = %s where game_id = %s and player_id = %s",
+                    (player_alive, game_id, player_id))
+                conn.commit()
+
+    def kill_player(self, game_id: int, player_id: int):
+        self.set_player_alive(game_id, player_id)
+
+    def get_player(self, game_id: int, player_id: int) -> psycopg2.extras.DictRow:
+        with self.get_dict_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "select * from game_players where game_id = %s and player_id = %s",
+                    (game_id, player_id))
+                return cur.fetchone()
+
     def get_all_players(self, game_id: int, *, alives: bool = True) -> list[psycopg2.extras.DictRow]:
         with self.get_dict_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "select * from game_players where game_id = %s and alive = %s",
-                    (game_id, alives))
+                    "select * from game_players where game_id = %s" +  " and alive = true" if alives else "",
+                    (game_id,))
                 return cur.fetchall()
 
     def get_role_players(self, game_id: int, role_id: int, *, alives: bool = True) -> list[psycopg2.extras.DictRow] | None:
         with self.get_dict_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "select * from game_players where game_id = %s and role_id = %s and alive = %s",
-                    (game_id, role_id, alives))
+                    "select * from game_players where game_id = %s and role_id = %s" + " and alive = true" if alives else "",
+                    (game_id, role_id))
                 return cur.fetchall()
 
-    def get_human_players(self, game_id: int, human: bool = True):
+    def get_human_players(self, game_id: int, human: bool = True, *, alives: bool = True):
         with self.get_dict_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "select * from game_players inner join roles using (role_id) where game_id = %s and mankind = %s",
+                    "select * from game_players inner join roles using (role_id) where game_id = %s and mankind = %s" + " and alive = true" if alives else "",
                     (game_id, human))
+                return cur.fetchall()
 
     def for_test(self):
         with self.get_dict_conn() as conn:
