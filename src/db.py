@@ -1,3 +1,4 @@
+import traceback
 from typing import TypeAlias
 # import mariadb as mydb
 import psycopg2
@@ -66,22 +67,28 @@ class DBController():
                 for id, role in self.guild_roles.items():
                     with conn.cursor() as cur:
                         sql = "insert into guild_roles (setting_type, setting_code, setting_name, setting_description) values (%s, %s, %s, %s)"
-                        params = (id, channel[0], channel[1], channel[2])
+                        params = (id, role[0], role[1], role[2])
                         cur.execute(sql, params)
                 conn.commit()
         except Exception as e:
-            logger.log(LT.WARNING, e)
+            logger.log(LT.WARNING, traceback.format_exc())
             return False
         return True
 
-    def start_game(self, host_user_id: int, host_guild_id: int) -> dict:
+    def check_game_exists(self, host_guild_id: int):
         with self.get_dict_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     "select game_status_id from games where game_host_guild_id = %s and game_status_id <> 2",
                     (host_guild_id,))
                 res = cur.fetchone()
-                logger.log(LT.DEBUG, res)
+                return res
+
+
+    def start_game(self, host_user_id: int, host_guild_id: int) -> dict:
+        with self.get_dict_conn() as conn:
+            with conn.cursor() as cur:
+                res = self.check_game_exists(host_guild_id)
                 if res:
                     return {"res": False, "code": 0, "game_status": res[0]}
                 snowflake_id = next(gen)
@@ -108,7 +115,34 @@ class DBController():
                 else:
                     return {"res": False, "code": 1}
 
-    def set_channels(self, guild_id, gm_channel: int = None, text_meeting_channel: int = None, voice_meeting_channel: int = None):
+    def set_player_role(self, guild_id: int, role_id: int) -> None:
+        with self.get_dict_conn() as conn:
+            with conn.cursor() as cur:
+                if self.get_all_players(guild_id):
+                    cur.execute(
+                        """update guild_role_settings
+                        set setting_value = %s
+                        where setting_guild = %s
+                        and setting_type = 0""",
+                        (role_id, guild_id))
+                else:
+                    cur.execute(
+                        """insert into guild_role_settings
+                        values (%s, 0, %s)""",
+                        (guild_id, role_id))
+            conn.commit()
+
+    def get_player_role(self, guild_id: int) -> list[psycopg2.extras.DictRow]:
+        with self.get_dict_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """select * from guild_role_settings
+                    where setting_guild = %s
+                    and setting_type = 0""",
+                    (guild_id,))
+                return cur.fetchone()
+
+    def set_channels(self, guild_id, gm_channel: int = None, text_meeting_channel: int = None, voice_meeting_channel: int = None) -> None:
         with self.get_dict_conn() as conn:
             if gm_channel:
                 with conn.cursor() as cur:
@@ -297,7 +331,8 @@ class DBController():
         with self.get_dict_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "select * from game_players where game_id = %s" +  " and alive = true" if alives else "",
+                    "select * from game_players where game_id = %s" +
+                    " and alive = true" if alives else "",
                     (game_id,))
                 return cur.fetchall()
 
@@ -305,7 +340,8 @@ class DBController():
         with self.get_dict_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "select * from game_players where game_id = %s and role_id = %s" + " and alive = true" if alives else "",
+                    "select * from game_players where game_id = %s and role_id = %s" +
+                    " and alive = true" if alives else "",
                     (game_id, role_id))
                 return cur.fetchall()
 
@@ -313,7 +349,8 @@ class DBController():
         with self.get_dict_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "select * from game_players inner join roles using (role_id) where game_id = %s and mankind = %s" + " and alive = true" if alives else "",
+                    "select * from game_players inner join roles using (role_id) where game_id = %s and mankind = %s" +
+                    " and alive = true" if alives else "",
                     (game_id, human))
                 return cur.fetchall()
 

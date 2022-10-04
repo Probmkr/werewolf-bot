@@ -522,6 +522,8 @@ class GameBoard:
             await self.text.send(embed=game_embed(GET.INFO, "ゲームを終了しました"))
         else:
             await self.text.send(embed=game_embed(GET.INFO, "ゲームが中断されました"))
+        await self.text.set_permissions(self.guild.default_role, send_messages=True)
+        del self
 
     async def start(self):
         try:

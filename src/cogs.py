@@ -1,6 +1,8 @@
 import time
 from typing import TypeAlias, TypedDict
+from xml.dom import NotFoundErr
 import disnake
+import disnake.errors as diserr
 from disnake.ext import commands, tasks
 from db import DBC
 from game_controller import GameBoard, GameController, GameDataType
@@ -9,6 +11,7 @@ from logger import LT, Logger
 from snowflake import SnowflakeGenerator
 import asyncio
 from decimal import Decimal, ROUND_HALF_UP, ROUND_HALF_EVEN
+from lib import check_role
 
 gen = SnowflakeGenerator(0)
 logger = Logger()
@@ -54,6 +57,18 @@ class Others(commands.Cog):
         embed.add_field(name="latency", value=f"`{int(latency*1000)}ms`")
         await interaction.response.send_message(embed=embed)
 
+    @commands.slash_command()
+    async def delete_category(self, interaction: Inter, category: disnake.CategoryChannel):
+        if not await check_role(interaction, wolf_moderator=False, channel_moderator=True):
+            return
+
+        async def delete(channel: disnake.abc.GuildChannel):
+            await channel.delete()
+        channels = category.channels
+        await interaction.response.send_message(embed=new_embed("カテゴリー削除開始", f"カテゴリーの中にある {len(channels)} 個のチャンネルを削除します"), ephemeral=True)
+        await asyncio.gather(*[delete(channel) for channel in channels])
+        await category.delete()
+        await interaction.edit_original_message(embed=new_embed("カテゴリー削除完了", "カテゴリー内の全てのチャンネルが削除されました"))
 
 class Werewolf(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -67,15 +82,6 @@ class Werewolf(commands.Cog):
         # embed.set_author(
         #     name="人狼GM", icon_url="https://cdn.discordapp.com/avatars/1018169450886856875/291ca2bfb08a25033a72d80734c0cd6a.webp")
         return embed
-
-    async def check_role(self, interaction: Inter):
-        for role in interaction.author.roles:
-            if role.name in ["人狼モデレーター"]:
-                break
-        else:
-            await interaction.response.send_message("あなたにこのコマンドを使う権限はありません。", ephemeral=True)
-            return False
-        return True
 
     def add_game_task(self, task: asyncio.Task, guild_id: int):
         self.games_to_start.append(task)
@@ -94,8 +100,38 @@ class Werewolf(commands.Cog):
     async def wolf(self, interaction: Inter):
         pass
 
+    @wolf.sub_command(description="人狼で使うチャンネルを自動で作ります")
+    async def auto_create_channes(
+        self,
+        interaction: Inter,
+        new_category: bool = True,
+        parent_category: disnake.CategoryChannel = None,
+        category_name: str = "人狼",
+        gm_channel_name: str = "人狼gm",
+        text_channel_name: str = "人狼chat",
+        voice_channel_name: str = "人狼vc"):
+
+        if not await check_role(interaction, channel_moderator=True):
+            return
+        gm_ch: disnake.TextChannel = None
+        text_ch: disnake.TextChannel = None
+        voice_ch: disnake.VoiceChannel = None
+        parent: disnake.CategoryChannel | disnake.Guild = None
+        if new_category or parent_category:
+            parent = parent_category or await interaction.guild.create_category(category_name)
+        else:
+            parent = interaction.channel.category or interaction.guild
+        gm_ch, text_ch, voice_ch = await asyncio.gather(*[
+            parent.create_text_channel(gm_channel_name),
+            parent.create_text_channel(text_channel_name),
+            parent.create_voice_channel(voice_channel_name)
+        ])
+        self.dbctl.set_channels(interaction.guild_id, gm_ch.id, text_ch.id, voice_ch.id)
+        await interaction.response.send_message(embed=new_embed("完了しました"), ephemeral=True)
+
+
     @wolf.sub_command(description="人狼ゲームで使うチャンネルを設定します")
-    async def set_channel(
+    async def set_channels(
             self,
             interaction: Inter,
             gm_channel: disnake.abc.GuildChannel = commands.Param(
@@ -105,6 +141,8 @@ class Werewolf(commands.Cog):
             voice_meeting_channel: disnake.abc.GuildChannel = commands.Param(
                 description="昼の会議ボイスチャンネル")):
 
+        if not await check_role(interaction):
+            return
         bad_channel = False
         if not (gm_channel and gm_channel.type == disnake.ChannelType.text):
             bad_channel = True
@@ -124,22 +162,29 @@ class Werewolf(commands.Cog):
     @wolf.sub_command(description="人狼ゲームを開始します")
     async def start(self, interaction: Inter):
         await interaction.response.defer()
-        if not await self.check_role(interaction):
+        if not await check_role(interaction):
             return
         res = self.dbctl.start_game(
             interaction.author.id, interaction.guild_id)
-        channel = self.dbctl.get_channels(interaction.guild_id)
+        channels = self.dbctl.get_channels(interaction.guild_id)
         if not res["res"]:
             game_status = res["game_status"]
             error_code = res["code"]
-            logger.log(LT.DEBUG, game_status)
             await interaction.edit_original_message(
                 embed=self.new_embed(
                     title=ERROR_CODES[error_code],
                     description=f"このサーバーでのゲームは{GAME_STATUS[game_status][1]}です。"))
             return
-        elif len(channel) < 3:
+        elif len(channels) < 3:
             await interaction.send(embed=self.new_embed("ゲームを開始する前に先にチャンネル設定を行ってください"))
+            return
+
+        try:
+            guild = interaction.guild
+            [await guild.fetch_channel(channel_id[0]) for channel_id in channels]
+        except diserr.NotFound:
+            await interaction.edit_original_message(embed=new_embed("チャンネル設定が正しくありません", "`/wolf set_channels` で設定し直してください"))
+            self.dbctl.end_game(interaction.guild_id)
             return
 
         await interaction.edit_original_message(
@@ -156,7 +201,7 @@ class Werewolf(commands.Cog):
 
     @wolf.sub_command(description="人狼ゲームを強制終了します")
     async def stop(self, interaction: Inter):
-        if not await self.check_role(interaction):
+        if not await check_role(interaction):
             return
         res = self.dbctl.get_game_from_server(interaction.guild_id)
         view = disnake.ui.View()
