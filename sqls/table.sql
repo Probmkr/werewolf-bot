@@ -42,3 +42,16 @@ create table if not exists channel_settings (
   setting_guild bigserial not null,
   setting_value bigserial not null
 );
+
+create table if not exists guild_roles (
+  setting_type smallint not null,
+  setting_code text not null,
+  setting_name text not null,
+  setting_description text
+);
+
+create table if not exists guild_role_settings (
+  setting_guild bigserial not null,
+  setting_type smallint not null,
+  setting_value bigserial not null
+);
