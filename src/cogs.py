@@ -45,10 +45,10 @@ class Others(commands.Cog):
             logger.log(LT.DEBUG, i.name)
         # await channel.send("botが起動しました")
 
-    @commands.Cog.listener()
-    async def on_interaction(self, interaction: Inter):
-        logger.log(
-            LT.TRACE, f"inter_type: `{interaction.type}` inter_id `{interaction.id}`")
+    # @commands.Cog.listener()
+    # async def on_interaction(self, interaction: Inter):
+    #     logger.log(
+    #         LT.TRACE, f"inter_type: `{interaction.type}` inter_id `{interaction.id}`")
 
     @commands.slash_command()
     async def ping(self, interaction: Inter):
@@ -69,6 +69,7 @@ class Others(commands.Cog):
         await asyncio.gather(*[delete(channel) for channel in channels])
         await category.delete()
         await interaction.edit_original_message(embed=new_embed("カテゴリー削除完了", "カテゴリー内の全てのチャンネルが削除されました"))
+
 
 class Werewolf(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -92,7 +93,7 @@ class Werewolf(commands.Cog):
 
     @commands.slash_command()
     async def embed_test(self, interaction: Inter):
-        embed = self.new_embed(
+        embed = new_embed(
             title="Embed Test", description="this is embed test")
         await interaction.response.send_message(embed=embed)
 
@@ -102,14 +103,15 @@ class Werewolf(commands.Cog):
 
     @wolf.sub_command(description="人狼で使うチャンネルを自動で作ります")
     async def auto_create_channes(
-        self,
-        interaction: Inter,
-        new_category: bool = True,
-        parent_category: disnake.CategoryChannel = None,
-        category_name: str = "人狼",
-        gm_channel_name: str = "人狼gm",
-        text_channel_name: str = "人狼chat",
-        voice_channel_name: str = "人狼vc"):
+            self,
+            interaction: Inter,
+            new_category: bool = True,
+            set_channels: bool = True,
+            parent_category: disnake.CategoryChannel = None,
+            category_name: str = "人狼",
+            gm_channel_name: str = "人狼gm",
+            text_channel_name: str = "人狼chat",
+            voice_channel_name: str = "人狼vc"):
 
         if not await check_role(interaction, channel_moderator=True):
             return
@@ -126,9 +128,15 @@ class Werewolf(commands.Cog):
             parent.create_text_channel(text_channel_name),
             parent.create_voice_channel(voice_channel_name)
         ])
-        self.dbctl.set_channels(interaction.guild_id, gm_ch.id, text_ch.id, voice_ch.id)
+        if set_channels:
+            self.dbctl.set_channels(interaction.guild_id,
+                                    gm_ch.id, text_ch.id, voice_ch.id)
         await interaction.response.send_message(embed=new_embed("完了しました"), ephemeral=True)
 
+    @wolf.sub_command(description="チャンネルの設定を解除します")
+    async def unset_channels(self, interaction: Inter):
+        self.dbctl.unset_channels(interaction.guild_id)
+        await interaction.response.send_message(embed=new_embed("チャンネル設定を全て解除しました"))
 
     @wolf.sub_command(description="人狼ゲームで使うチャンネルを設定します")
     async def set_channels(
@@ -151,34 +159,24 @@ class Werewolf(commands.Cog):
         if not (voice_meeting_channel and voice_meeting_channel.type == disnake.ChannelType.voice):
             bad_channel = True
         if bad_channel:
-            await interaction.response.send_message(embed=self.new_embed(
+            await interaction.response.send_message(embed=new_embed(
                 title="設定に失敗しました",
                 description="正しいチャンネルタイプを指定してください"))
             return
         self.dbctl.set_channels(interaction.guild_id, gm_channel.id,
                                 text_meeting_channel.id, voice_meeting_channel.id)
-        await interaction.response.send_message(embed=self.new_embed(title="設定が完了しました"))
+        await interaction.response.send_message(embed=new_embed(title="設定が完了しました"))
 
     @wolf.sub_command(description="人狼ゲームを開始します")
     async def start(self, interaction: Inter):
         await interaction.response.defer()
         if not await check_role(interaction):
             return
-        res = self.dbctl.start_game(
-            interaction.author.id, interaction.guild_id)
-        channels = self.dbctl.get_channels(interaction.guild_id)
-        if not res["res"]:
-            game_status = res["game_status"]
-            error_code = res["code"]
-            await interaction.edit_original_message(
-                embed=self.new_embed(
-                    title=ERROR_CODES[error_code],
-                    description=f"このサーバーでのゲームは{GAME_STATUS[game_status][1]}です。"))
-            return
-        elif len(channels) < 3:
-            await interaction.send(embed=self.new_embed("ゲームを開始する前に先にチャンネル設定を行ってください"))
-            return
 
+        channels = self.dbctl.get_channels(interaction.guild_id)
+        if len(channels) < 3:
+            await interaction.edit_original_message(embed=new_embed("ゲームを開始する前に先にチャンネル設定を行ってください", "\n`/wolf auto_create_channels` を使って自動でチャンネルを作って登録することもできます"))
+            return
         try:
             guild = interaction.guild
             [await guild.fetch_channel(channel_id[0]) for channel_id in channels]
@@ -187,11 +185,23 @@ class Werewolf(commands.Cog):
             self.dbctl.end_game(interaction.guild_id)
             return
 
+        res = self.dbctl.start_game(
+            interaction.author.id, interaction.guild_id)
+        if not res["res"]:
+            game_status = res["game_status"]
+            error_code = res["code"]
+            await interaction.edit_original_message(
+                embed=new_embed(
+                    title=ERROR_CODES[error_code],
+                    description=f"このサーバーでのゲームは{GAME_STATUS[game_status][1]}です。"))
+            return
+
         await interaction.edit_original_message(
-            embed=self.new_embed(
+            embed=new_embed(
                 title="ゲームを開始します",
                 description=f"ゲーム No.`{res['game_id']}`"))
-        game_data: GameDataType = self.dbctl.get_game_from_server(interaction.guild_id)[0]
+        game_data: GameDataType = self.dbctl.get_game_from_server(interaction.guild_id)[
+            0]
 
         game = GameBoard(game_data, self.bot)
         await game.async_init()
@@ -220,7 +230,7 @@ class Werewolf(commands.Cog):
 
         if res:
             await interaction.response.send_message(
-                embed=self.new_embed(
+                embed=new_embed(
                     title="ゲームは実行中です",
                     description="本当に終了しますか？"),
                 view=view)
@@ -228,7 +238,7 @@ class Werewolf(commands.Cog):
             await self.really_stop(interaction)
         else:
             await interaction.response.send_message(
-                embed=self.new_embed(
+                embed=new_embed(
                     title=ERROR_CODES[2]))
 
     async def really_stop(self, interaction: Inter):
@@ -239,7 +249,7 @@ class Werewolf(commands.Cog):
             logger.log(LT.WARNING, e)
         except KeyError as e:
             logger.log(LT.INFO, e)
-        embed = self.new_embed(
+        embed = new_embed(
             title="ゲームを終了しました")
         await interaction.edit_original_message(view=None)
         await interaction.send(embed=embed)
@@ -249,11 +259,11 @@ class Werewolf(commands.Cog):
         status = self.dbctl.get_game_from_server(interaction.guild_id)
         if not status:
             await interaction.response.send_message(
-                embed=self.new_embed(
+                embed=new_embed(
                     title=ERROR_CODES[2]))
         else:
             status = dict(status[0])
-            embed = self.new_embed(title="現在進行中のゲーム")
+            embed = new_embed(title="現在進行中のゲーム")
             for i in status:
                 embed.add_field(name=i, value=f"`{status[i]}`")
             await interaction.response.send_message(embed=embed)
@@ -294,7 +304,7 @@ class Werewolf(commands.Cog):
         #     return
 
         if seconds < 30:
-            await interaction.response.send_message(embed=self.new_embed("30秒以上にしてください"), ephemeral=True)
+            await interaction.response.send_message(embed=new_embed("30秒以上にしてください"), ephemeral=True)
             return
         button_id = str(next(gen))
         button = None
@@ -305,7 +315,7 @@ class Werewolf(commands.Cog):
             button = self.ExtendButton(
                 player_num, interaction, text, game, seconds, button_id)
             view.add_item(button)
-            await interaction.response.send_message(embed=self.new_embed(text), view=view, ephemeral=False)
+            await interaction.response.send_message(embed=new_embed(text), view=view, ephemeral=False)
         except Exception as e:
             logger.log(LT.WARNING, e)
             await interaction.response.send_message("error", ephemeral=True)

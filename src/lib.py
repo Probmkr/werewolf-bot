@@ -1,5 +1,6 @@
 import asyncio
 import disnake
+import disnake.errors
 
 from logger import LT, Logger
 
@@ -28,5 +29,9 @@ async def check_role(interaction: disnake.AppCmdInter, *, wolf_moderator: bool =
         ok = interaction.author.guild_permissions.manage_channels and ok
 
     if not ok:
-        await interaction.response.send_message("あなたにこのコマンドを使う権限はありません。", ephemeral=True)
+        try:
+            await interaction.response.send_message("あなたにこのコマンドを使う権限はありません。", ephemeral=True)
+        except disnake.errors.InteractionResponded:
+            await interaction.edit_original_message("あなたにこのコマンドを使う権限はありません。")
+
     return ok

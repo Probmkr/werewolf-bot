@@ -1,4 +1,5 @@
 import asyncio
+from time import time
 import traceback
 from db import DBC
 from datetime import datetime
@@ -72,6 +73,7 @@ class GameBoard:
     game_status_id: int
     host_user_id: int
     guild_id: int
+    guild: disnake.Guild
     started: datetime
     # ended: datetime
     bot: commands.Bot
@@ -88,6 +90,8 @@ class GameBoard:
     joining_user: dict[int, int]
     player_num: int
     role_set: dict[int, int]
+    guild_player_role_id: int
+    guild_player_role: disnake.Role
     day_long: int
     noon_time: int
     night_time: int
@@ -128,6 +132,26 @@ class GameBoard:
         self.gm = await self.guild.fetch_channel(self.gm_id)
         self.text = await self.guild.fetch_channel(self.text_id)
         self.voice = await self.guild.fetch_channel(self.voice_id)
+
+        if not self.dbctl.get_player_role(self.guild_id):
+            self.guild_player_role = await self.guild.create_role(name="人狼プレーヤー")
+            self.guild_player_role_id = self.guild_player_role.id
+            self.dbctl.set_player_role(
+                self.guild_id, self.guild_player_role_id)
+            await self.gm.send(embed=game_embed(GET.INFO, "プレーヤー識別用ロール未設定", f"プレーヤー識別用ロールが設定されていないので自動で作成しました\n{self.guild_player_role}"))
+        else:
+            self.guild_player_role_id = self.dbctl.get_player_role(self.guild_id)[
+                "setting_value"]
+            self.guild_player_role = self.guild.get_role(
+                self.guild_player_role_id)
+
+        await asyncio.gather(*[
+            self.text.set_permissions(
+                self.guild.default_role, send_messages=False),
+            self.text.set_permissions(
+                self.guild_player_role, send_messages=False),
+        ])
+
         self.add_task(self.gather_users)
 
     def add_task(self, func: Callable[[Any], Awaitable[Any]]):
@@ -135,6 +159,19 @@ class GameBoard:
 
     def game_embed(self, type: GET, title: str | None = "", description: str | None = ""):
         return disnake.Embed(title=title, description=description, color=type.value)
+
+    async def mute_unmute_vc(self, mute: bool) -> None:
+        players = self.voice.members
+        await asyncio.gather(*[player.edit(mute=mute) for player in players])
+
+    async def mute_unmute_all(self, mute: bool, *, alives: bool = False) -> None:
+        logger.log(LT.DEBUG, "mute start")
+        start = time()
+        players_id = [player["player_id"] for player in self.dbctl.get_all_players(self.game_id, alives=alives)]
+        players = await asyncio.gather(*[self.guild.fetch_member(player_id) for player_id in players_id])
+        await asyncio.gather(*[player.edit(mute=mute) for player in players])
+        end = time() - start
+        logger.log(LT.DEBUG, f"mute end {end}ms")
 
     async def gather_users(self):
         button_id = str(next(gen))
@@ -151,7 +188,9 @@ class GameBoard:
 
         async def user_join(interaction: disnake.MessageInteraction):
             user = interaction.author
+            # start = time()
             await interaction.response.send_message(embed=game_embed(GET.INFO, "受付完了"), ephemeral=True)
+            # print(time() - start)
             if user.id in self.joining_user:
                 del self.joining_user[user.id]
                 await self.text.send(f"{user.mention} が抜けました")
@@ -201,8 +240,6 @@ class GameBoard:
                 # logger.log(LT.TRACE, self.values)
                 self.game.role_set = ROLE_SETS[self.game.player_num][int(
                     self.values[0])].copy()
-                # logger.log(LT.TRACE, self.game.role_set)
-                # await inter.response.send_message("")
 
     async def set_role_type(self):
         embed = game_embed(GET.INFO, "役職を決めます", "人員構成を選択してください")
@@ -227,7 +264,7 @@ class GameBoard:
             return component_type and custom_id and author
 
         msg = await self.gm.send(embed=embed, view=view)
-        logger.log(LT.DEBUG, "wait for role set")
+        # logger.log(LT.DEBUG, "wait for role set")
         await self.bot.wait_for("interaction", check=check, timeout=WAIT_TIMEOUT)
         decide_embed = game_embed(
             GET.INFO, "役職が決まりました", "次に割り振りをします"+"\n"+"DMに役職を送るので確認してください")
@@ -243,7 +280,6 @@ class GameBoard:
         # logger.log(LT.DEBUG, random_list)
         for player in self.joining_user:
             self.joining_user[player] = random_list.pop(0)
-        # logger.log(LT.DEBUG, self.joining_user)
 
     async def register_players(self):
         await self.set_roles()
@@ -254,21 +290,18 @@ class GameBoard:
         async def register(player: int, role: int):
             additional = []
             if role == 1:
-                # logger.log(LT.DEBUG, f"role: {role}")
-                # logger.log(LT.DEBUG, f"player: {player}")
-                # logger.log(LT.DEBUG, f"wolves: {wolves}")
                 other_wolves = [wolf for wolf in wolves if wolf != player]
-                # logger.log(LT.DEBUG, f"other_wolves: {other_wolves}")
                 if other_wolves:
                     wolves_member = await get_guild_members(self.guild, *other_wolves)
-                    # logger.log(LT.DEBUG, f"wolves_member: {wolves_member}")
                     wolves_quoted = map(
                         lambda item: f"`{item.display_name}`", wolves_member)
                     additional.append(
                         "他の人狼は、 " + ", ".join(wolves_quoted) + "です")
             user_name = (await self.guild.fetch_member(player)).display_name
             self.dbctl.register_player(self.game_id, player, user_name, role)
-            await (await self.bot.fetch_user(player)).send(embed=role_embed(role, self.game_id, additional))
+            user = await self.guild.fetch_member(player)
+            await user.send(embed=role_embed(role, self.game_id, additional))
+            await user.add_roles(self.guild_player_role)
 
         tasks: list[asyncio.Task] = []
         for player, role in self.joining_user.items():
@@ -278,22 +311,27 @@ class GameBoard:
 
         self.add_task(self.noon)
 
+    async def check_killed(self):
+        if self.killed_by_wolf[-1] != None:
+            killed_data: PlayerType = self.dbctl.get_player(
+                self.game_id, self.killed_by_wolf[-1])
+            await self.text.send(embed=game_embed(GET.BAD, f"{killed_data['player_name']}が殺されました"))
+        elif self.killed_by_wolf[-1] == None:
+            await self.text.send(embed=game_embed(GET.GOOD, f"昨夜は誰も殺されませんでした"))
+        else:
+            raise Exception("self.killed_by_wolf に意味不明の値が代入されました")
+
     async def noon(self):
-        self.day_long = 1
+        self.day_long = 15
         self.noon_time += 1
         self.dbctl.set_time(self.game_id, noon=self.noon_time)
         await self.text.send(embed=game_embed(
             GET.INFO, f"{self.noon_time}日目の昼が始まりました", "話し合って人狼を探しあてましょう！\n会議時間は2分30秒です\n`/wolf extend`で延長、`/wolf skip`で短縮できます"))
         if self.night_time >= 1:
-            if self.killed_by_wolf[-1] != None:
-                killed_data: PlayerType = self.dbctl.get_player(
-                    self.game_id, self.killed_by_wolf[-1])
-                await self.text.send(embed=game_embed(GET.BAD, f"{killed_data['player_name']}が殺されました"))
-            elif self.killed_by_wolf[-1] == None:
-                await self.text.send(embed=game_embed(GET.GOOD, f"昨夜は誰も殺されませんでした"))
-            else:
-                raise Exception("self.killed_by_wolf に意味不明の値が代入されました")
-        await self.text.set_permissions(self.guild.default_role, send_messages=True)
+            await self.check_killed()
+        await self.text.set_permissions(self.guild_player_role, send_messages=True)
+        await self.mute_unmute_all(False)
+        logger.log(LT.DEBUG, "permissions")
         ltm = self.day_long % 60
         mins = int(self.day_long / 60)
         await asyncio.sleep(ltm)
@@ -352,6 +390,7 @@ class GameBoard:
             wolves: list[PlayerType] = []
             for wolf in self.dbctl.get_role_players(self.game_id, 1):
                 wolves.append(dict(wolf))
+            logger.log(LT.DEBUG, wolves)
             wolf_text = "殺す人を決めてください"
             wolves_num = len(wolves)
             multi = wolves_num >= 2
@@ -377,19 +416,19 @@ class GameBoard:
                     view.add_item(select)
                     await wolf_user.send(embed=crole_embed(1, its_night, "仲間と" if multi else "" + "殺す人を決めましょう"))
                     msg = await wolf_user.send(embed=crole_embed(1, wolf_text, "仲間と選択した中でランダムに決められます" if multi else ""), view=view)
+                    is_timeouted = False
                     try:
                         await self.bot.wait_for("interaction", check=check, timeout=WAIT_TIMEOUT)
                     except asyncio.TimeoutError:
                         await msg.edit(view=None)
                         await timeouted(wolf_user, WAIT_TIMEOUT)
-                        return
+                        is_timeouted = True
                     await msg.edit(view=None)
+                    if is_timeouted:
+                        return
                     if multi:
-                        # logger.log(LT.DEBUG, "append wolf_kill_list")
                         self.wolf_kill_list.append(int(select.values[0]))
                     else:
-                        # logger.log(LT.DEBUG, "append killed_by_wolf")
-                        # logger.log(LT.DEBUG, f"select.values = {select.values}")
                         self.killed_by_wolf.append(int(select.values[0]))
                     await msg.reply(embed=crole_embed(1, "完了しました"))
 
@@ -494,19 +533,25 @@ class GameBoard:
 
         self.night_time += 1
         await self.text.send(embed=game_embed(GET.INFO, its_night, "全員ミュートです"))
-        await self.text.set_permissions(self.guild.default_role, send_messages=False)
+        await self.text.set_permissions(self.guild_player_role, send_messages=False)
+        await self.mute_unmute_all(True)
         night_tasks = [wolf_action(), seer_action(), guard_action()]
         if self.night_time >= 2:
             night_tasks.append(medium_action())
         await asyncio.gather(*night_tasks)
         logger.log(LT.DEBUG, f"to guard are {self.guarded_by_guard}")
 
-        if self.killed_by_wolf[-1] in self.guarded_by_guard:
-            self.killed_by_wolf[-1] = None
-        else:
-            self.dbctl.kill_player(self.game_id, self.killed_by_wolf[-1])
-            killed_user = await self.guild.fetch_member(self.killed_by_wolf[-1])
-            await killed_user.send(embed=game_embed(GET.BAD, "あなたは殺されました", "これから先は発言しないでください"))
+        try:
+            if self.killed_by_wolf[-1] in self.guarded_by_guard:
+                self.killed_by_wolf[-1] = None
+            else:
+                self.dbctl.kill_player(self.game_id, self.killed_by_wolf[-1])
+                killed_user = await self.guild.fetch_member(self.killed_by_wolf[-1])
+                await killed_user.send(embed=game_embed(GET.BAD, "あなたは殺されました", "これから先は発言しないでください"))
+                await killed_user.remove_roles(self.guild_player_role)
+                await killed_user.edit(mute=True)
+        except IndexError:
+                self.killed_by_wolf.append(None)
 
         await asyncio.sleep(1)
 
@@ -517,12 +562,19 @@ class GameBoard:
         self.add_task(self.noon)
 
     async def end_game(self):
+        await self.mute_unmute_all(False)
         self.dbctl.end_game(self.guild_id)
         if not self.interrupt:
             await self.text.send(embed=game_embed(GET.INFO, "ゲームを終了しました"))
         else:
             await self.text.send(embed=game_embed(GET.INFO, "ゲームが中断されました"))
         await self.text.set_permissions(self.guild.default_role, send_messages=True)
+
+        async def remove_role(player_id: int):
+            player = await self.guild.fetch_member(player_id)
+            await player.remove_roles(self.guild_player_role)
+        await asyncio.gather(*[remove_role(player["player_id"]) for player in self.dbctl.get_all_players(self.game_id)])
+
         del self
 
     async def start(self):

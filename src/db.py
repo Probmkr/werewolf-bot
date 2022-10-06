@@ -84,7 +84,6 @@ class DBController():
                 res = cur.fetchone()
                 return res
 
-
     def start_game(self, host_user_id: int, host_guild_id: int) -> dict:
         with self.get_dict_conn() as conn:
             with conn.cursor() as cur:
@@ -141,6 +140,14 @@ class DBController():
                     and setting_type = 0""",
                     (guild_id,))
                 return cur.fetchone()
+
+    def unset_channels(self, guild_id) -> None:
+        with self.get_dict_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """delete from channel_settings
+                    where setting_guild = %s""",
+                    (guild_id,))
 
     def set_channels(self, guild_id, gm_channel: int = None, text_meeting_channel: int = None, voice_meeting_channel: int = None) -> None:
         with self.get_dict_conn() as conn:
@@ -332,7 +339,7 @@ class DBController():
             with conn.cursor() as cur:
                 cur.execute(
                     "select * from game_players where game_id = %s" +
-                    " and alive = true" if alives else "",
+                    (" and alive = true" if alives else ""),
                     (game_id,))
                 return cur.fetchall()
 
@@ -353,6 +360,32 @@ class DBController():
                     " and alive = true" if alives else "",
                     (game_id, human))
                 return cur.fetchall()
+
+    def set_guild_player_role(self, guild_id: int, role_id: int):
+        with self.get_dict_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "select * from guild_role_settings where setting_guild = %s and setting_type = 0", (guild_id,))
+                res = cur.fetchone()
+                if res:
+                    cur.execute(
+                        """update guild_role_settings
+                        set setting_value = %s
+                        where setting_guild = %s
+                        and setting_type = 0""",
+                        (role_id, guild_id))
+                else:
+                    cur.execute(
+                        """insert into guild_role_settings
+                        values (%s, 0, %s)""",
+                        (guild_id, role_id))
+            conn.commit()
+
+    def get_guild_player_role(self, guild_id: int) -> psycopg2.extras.DictRow:
+        with self.get_dict_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("select * from guild_role_settings where setting_guild = %s and setting_type = 0", (guild_id,))
+                return cur.fetchone()
 
     def for_test(self):
         with self.get_dict_conn() as conn:
